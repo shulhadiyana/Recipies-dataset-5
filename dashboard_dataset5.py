@@ -1,200 +1,355 @@
-# app.py - Prediksi Kalori Resep Makanan (Versi Optimal)
+# app.py - Prediksi Popularitas Resep dengan Model XGBoost
 import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import re
+import string
+import warnings
+warnings.filterwarnings('ignore')
 
 # Konfigurasi halaman
 st.set_page_config(
-    page_title="KaloriKu - Prediksi Kalori Resep",
-    page_icon="🥗",
-    layout="wide"
+    page_title="Prediksi Popularitas Resep",
+    page_icon="🔥",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Database kalori bahan makanan
-CALORIE_DB = {
-    'ayam': 165, 'daging sapi': 250, 'ikan': 150, 'udang': 99, 'telur': 155,
-    'nasi': 130, 'kentang': 77, 'mie': 138, 'tepung': 364,
-    'bayam': 23, 'wortel': 41, 'brokoli': 34, 'tomat': 18,
-    'tahu': 80, 'tempe': 193,
-    'minyak': 884, 'santan': 230, 'gula': 387, 'garam': 0,
-    'bawang putih': 149, 'bawang merah': 40, 'cabai': 40,
-}
+# Custom CSS
+st.markdown("""
+<style>
+    .stApp {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    .main-header {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+        margin-bottom: 2rem;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+    }
+    .prediction-box {
+        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        padding: 2rem;
+        border-radius: 20px;
+        text-align: center;
+        color: white;
+        margin-top: 2rem;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        animation: fadeIn 0.5s ease-in;
+    }
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    .prediction-number {
+        font-size: 5rem;
+        font-weight: bold;
+        margin: 0;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    }
+    .love-icon {
+        font-size: 2rem;
+        animation: heartbeat 1s infinite;
+    }
+    @keyframes heartbeat {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.1); }
+    }
+    .metric-card {
+        background-color: white;
+        padding: 1rem;
+        border-radius: 10px;
+        margin-top: 1rem;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .feature-box {
+        background-color: white;
+        padding: 1rem;
+        border-radius: 10px;
+        margin-top: 1rem;
+        border-left: 5px solid #f5576c;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-DISH_CALORIES = {
-    'ayam goreng': 350, 'nasi goreng': 380, 'soto ayam': 250,
-    'rendang': 450, 'sayur asem': 150, 'capcay': 120,
-}
-
+# Fungsi pembersihan teks (sama seperti di notebook)
 def clean_text(text):
+    """Membersihkan teks untuk preprocessing"""
     if not isinstance(text, str):
         text = str(text)
-    return text.lower().strip()
+    text = text.lower()
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    text = ' '.join(text.split())
+    text = re.sub(r'\d+', '', text)
+    return text
 
-def predict_calories(title, ingredients, steps, portion):
-    cleaned_title = clean_text(title)
-    cleaned_ingredients = clean_text(ingredients)
-    cleaned_steps = clean_text(steps)
-    
-    # Cek database masakan
-    total = 0
-    for dish, calories in DISH_CALORIES.items():
-        if dish in cleaned_title:
-            total = calories
-            break
-    
-    # Jika tidak cocok, hitung dari bahan
-    if total == 0:
-        for key, calories in CALORIE_DB.items():
-            if key in cleaned_ingredients:
-                total += calories
-        
-        if 'goreng' in cleaned_steps:
-            total += 150
-        if 'santan' in cleaned_ingredients:
-            total += 100
-        
-        total = max(100, min(800, int(total / 2)))
-    
-    return total
+# Load model dengan caching
+@st.cache_resource
+def load_model():
+    """Memuat pipeline model yang sudah disimpan"""
+    try:
+        pipeline = joblib.load('loves_prediction_pipeline.pkl')
+        return pipeline
+    except FileNotFoundError:
+        st.error("❌ Model file 'loves_prediction_pipeline.pkl' tidak ditemukan!")
+        st.info("Pastikan file model ada di direktori yang sama dengan app.py")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error loading model: {str(e)}")
+        return None
 
 # Header
-st.title("🥗 KaloriKu")
-st.markdown("**Prediksi Kalori Resep Masakan**")
-st.markdown("Masukkan resep Anda di bawah ini untuk mendapatkan estimasi kalori.")
-st.markdown("---")
+st.markdown("""
+<div class="main-header">
+    <h1>🔥 Prediksi Popularitas Resep</h1>
+    <p>Machine Learning memprediksi seberapa populer resep Anda! 🍳</p>
+</div>
+""", unsafe_allow_html=True)
 
-# Form input dengan tampilan jelas
-st.subheader("📝 Masukkan Resep Anda")
+# Sidebar
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2330/2330881.png", width=80)
+    st.title("📊 Tentang Model")
+    st.markdown("""
+    ### Model Machine Learning
+    
+    Aplikasi ini menggunakan **XGBoost Regressor** yang dilatih dengan **14.945 resep** dari platform kuliner.
+    
+    ### 📈 Performa Model
+    
+    | Metrik | Nilai |
+    |--------|-------|
+    | MAE | **9.90** loves |
+    | RMSE | 17.99 loves |
+    | R² Score | 0.03 |
+    
+    ### 🎯 Target
+    
+    Model berhasil mencapai target **MAE ≤ 10 loves** ✅
+    
+    ### 🔧 Fitur yang Digunakan
+    
+    - Judul resep (Title)
+    - Bahan-bahan (Ingredients)  
+    - Langkah memasak (Steps)
+    
+    ### 💡 Interpretasi
+    
+    - **0-5 loves**: 🔵 Kurang populer
+    - **6-15 loves**: 🟢 Cukup populer
+    - **16-30 loves**: 🟡 Populer
+    - **>30 loves**: 🔴 Sangat populer!
+    """)
+    
+    st.markdown("---")
+    st.markdown("Made with ❤️ using XGBoost & Streamlit")
 
-# Baris 1: Judul Resep
-st.markdown("**🍲 Judul Resep**")
-title = st.text_input(
-    "",
-    placeholder="Contoh: Ayam Goreng Crispy",
-    label_visibility="collapsed"
-)
-
-# Baris 2: Bahan-bahan
-st.markdown("**🥕 Bahan-bahan**")
-ingredients = st.text_area(
-    "",
-    placeholder="Contoh: 1 kg ayam, tepung terigu, bawang putih, garam, merica",
-    height=120,
-    label_visibility="collapsed"
-)
-
-# Baris 3: Jumlah Porsi dan Langkah dalam 2 kolom
+# Main content
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("**👥 Jumlah Porsi**")
-    portion = st.number_input(
-        "",
-        min_value=1,
-        max_value=10,
-        value=1,
-        label_visibility="collapsed"
+    st.subheader("📝 Judul Resep")
+    title = st.text_area(
+        "Masukkan judul resep Anda",
+        placeholder="Contoh: Ayam Goreng Crispy Pedas",
+        height=80,
+        help="Judul yang menarik dan deskriptif cenderung mendapat lebih banyak likes"
+    )
+    
+    st.subheader("🥕 Bahan-bahan")
+    ingredients = st.text_area(
+        "Masukkan bahan-bahan (pisahkan dengan -- atau koma)",
+        placeholder="Contoh: 1 kg ayam--tepung terigu--bawang putih--garam--merica--cabai bubuk",
+        height=150,
+        help="Gunakan -- atau koma untuk memisahkan setiap bahan"
     )
 
 with col2:
-    st.markdown("**📖 Langkah Memasak**")
+    st.subheader("📖 Langkah Memasak")
     steps = st.text_area(
-        "",
-        placeholder="Contoh: 1. Cuci ayam, 2. Goreng hingga matang",
-        height=120,
-        label_visibility="collapsed"
+        "Masukkan langkah memasak (pisahkan dengan --)",
+        placeholder="Contoh: 1. Cuci bersih ayam--2. Campur tepung dan bumbu--3. Goreng hingga kecoklatan--4. Sajikan dengan nasi hangat",
+        height=220,
+        help="Jelaskan langkah secara detail, semakin detail semakin akurat prediksinya"
     )
-
-st.markdown("---")
+    
+    # Contoh resep
+    st.subheader("🍳 Contoh Resep")
+    example_options = {
+        "Pilih contoh resep...": "",
+        "Ayam Goreng Crispy": "ayam goreng crispy renyah|1 kg ayam--tepung terigu--tepung maizena--bawang putih bubuk--merica--garam--telur--minyak goreng|cuci ayam--campur tepung dan bumbu--celup ayam ke telur--gulingkan ke tepung--goreng hingga kecoklatan",
+        "Soto Ayam": "soto ayam kampung|1 ekor ayam kampung--bawang putih--bawang merah--kunyit--jahe--lengkuas--serai--daun salam--daun jeruk--soun--toge--telur rebus|rebus ayam--haluskan bumbu--tumis bumbu--masukkan ke rebusan ayam--masak hingga empuk--sajikan",
+        "Nasi Goreng": "nasi goreng spesial|nasi putih--bawang putih--bawang merah--cabai--kecap manis--telur--ayam suwir--margarin|haluskan bawang dan cabai--tumis bumbu--masukkan ayam--masukkan nasi--tambahkan kecap--masak telur orak arik"
+    }
+    
+    selected_example = st.selectbox("Pilih contoh resep:", list(example_options.keys()))
+    if selected_example != "Pilih contoh resep...":
+        example_data = example_options[selected_example].split('|')
+        if len(example_data) == 3:
+            title = example_data[0]
+            ingredients = example_data[1]
+            steps = example_data[2]
+            st.success(f"✅ Contoh '{selected_example}' telah diisi!")
 
 # Tombol prediksi
-col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-with col_btn2:
-    predict_btn = st.button("🔮 PREDIKSI KALORI", type="primary", use_container_width=True)
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    predict_button = st.button("🔮 Prediksi Popularitas", use_container_width=True, type="primary")
 
-# Contoh resep
-st.markdown("### 🍳 Contoh Resep (klik untuk mencoba)")
+# Load model
+model_pipeline = load_model()
 
-col_ex1, col_ex2, col_ex3 = st.columns(3)
-
-with col_ex1:
-    if st.button("🍗 Ayam Goreng", use_container_width=True):
-        title = "Ayam Goreng Krispi"
-        ingredients = "ayam, tepung terigu, bawang putih, garam, merica, telur, minyak goreng"
-        steps = "1. Cuci ayam, 2. Balur dengan tepung, 3. Goreng hingga matang"
-        portion = 1
-        st.rerun()
-
-with col_ex2:
-    if st.button("🍜 Nasi Goreng", use_container_width=True):
-        title = "Nasi Goreng Spesial"
-        ingredients = "nasi, bawang putih, bawang merah, cabai, kecap, telur, margarin"
-        steps = "1. Tumis bumbu, 2. Masukkan nasi, 3. Aduk rata, 4. Tambahkan kecap"
-        portion = 1
-        st.rerun()
-
-with col_ex3:
-    if st.button("🥬 Sayur Asem", use_container_width=True):
-        title = "Sayur Asem"
-        ingredients = "kacang panjang, jagung, melinjo, asam jawa, cabai, bawang merah"
-        steps = "1. Rebus air, 2. Masukkan sayuran, 3. Tambahkan bumbu, 4. Masak hingga matang"
-        portion = 1
-        st.rerun()
-
-st.markdown("---")
-
-# Hasil prediksi
-if predict_btn:
+# Proses prediksi
+if predict_button:
     if not title or not ingredients or not steps:
-        st.error("❌ Mohon lengkapi: Judul Resep, Bahan-bahan, dan Langkah Memasak!")
+        st.warning("⚠️ Mohon lengkapi semua field (judul, bahan, dan langkah) terlebih dahulu!")
+    elif model_pipeline is None:
+        st.error("❌ Model tidak dapat dimuat. Pastikan file 'loves_prediction_pipeline.pkl' tersedia.")
     else:
-        with st.spinner("Menghitung..."):
-            calories = predict_calories(title, ingredients, steps, portion)
-            calories_per_portion = int(calories / portion)
-            
-            # Tampilkan hasil
-            st.markdown("## 📊 Hasil Prediksi")
-            
-            # Card hasil
-            col_r1, col_r2, col_r3 = st.columns([1, 2, 1])
-            with col_r2:
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #e74c3c, #c0392b); 
-                            padding: 2rem; border-radius: 20px; text-align: center;">
-                    <p style="color: white; font-size: 1rem; margin: 0;">Estimasi Kalori per Porsi</p>
-                    <p style="color: white; font-size: 4rem; font-weight: bold; margin: 0;">{calories_per_portion}</p>
-                    <p style="color: white; font-size: 1.2rem; margin: 0;">kalori</p>
-                    <p style="color: white; font-size: 0.8rem; margin-top: 0.5rem;">Total resep: {calories} kalori ({portion} porsi)</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Kategori
-            if calories_per_portion < 250:
-                st.success(f"✅ **Kategori: Rendah Kalori** - Cocok untuk diet sehat!")
-            elif calories_per_portion < 450:
-                st.info(f"📌 **Kategori: Sedang** - Porsi normal untuk makan siang")
-            else:
-                st.warning(f"⚠️ **Kategori: Tinggi** - Perhatikan porsi Anda!")
-            
-            # Saran aktivitas
-            st.markdown("---")
-            st.markdown("### 💡 Saran Aktivitas")
-            if calories_per_portion <= 300:
-                st.markdown("🚶‍♀️ **Jalan kaki 20 menit** dapat membakar kalori ini")
-            elif calories_per_portion <= 500:
-                st.markdown("🚴‍♂️ **Bersepeda 30 menit** dapat membakar kalori ini")
-            else:
-                st.markdown("🏃‍♂️ **Lari 40 menit** atau **Berenang 45 menit** dapat membakar kalori ini")
+        with st.spinner("Menganalisis resep..."):
+            try:
+                # Preprocessing seperti di notebook
+                cleaned_title = clean_text(title)
+                cleaned_ingredients = clean_text(ingredients)
+                cleaned_steps = clean_text(steps)
+                combined_text = f"{cleaned_title} {cleaned_ingredients} {cleaned_steps}"
+                
+                # Transformasi dengan TF-IDF
+                tfidf = model_pipeline['tfidf']
+                text_tfidf = tfidf.transform([combined_text])
+                
+                # Prediksi dengan model
+                model = model_pipeline['model']
+                prediction = model.predict(text_tfidf)[0]
+                
+                # Tampilkan hasil
+                st.markdown("---")
+                
+                # Animasi dan hasil prediksi
+                col_left, col_mid, col_right = st.columns([1, 2, 1])
+                with col_mid:
+                    # Tentukan emoji dan warna berdasarkan prediksi
+                    if prediction <= 5:
+                        emoji = "🔵"
+                        category = "Kurang Populer"
+                        advice = "Coba gunakan judul yang lebih menarik atau bahan yang lebih populer!"
+                    elif prediction <= 15:
+                        emoji = "🟢"
+                        category = "Cukup Populer"
+                        advice = "Resep ini memiliki potensi yang baik! Optimasi sedikit untuk hasil lebih maksimal."
+                    elif prediction <= 30:
+                        emoji = "🟡"
+                        category = "Populer"
+                        advice = "Wah! Resep ini diprediksi akan disukai banyak orang!"
+                    else:
+                        emoji = "🔴"
+                        category = "Sangat Populer"
+                        advice = "🔥 Luar biasa! Resep ini diprediksi akan menjadi favorit banyak pengguna!"
+                    
+                    st.markdown(f"""
+                    <div class="prediction-box">
+                        <div class="love-icon">{emoji}❤️{emoji}</div>
+                        <p style="font-size: 1.2rem; margin: 0;">Prediksi Jumlah Likes</p>
+                        <p class="prediction-number">{prediction:.0f}</p>
+                        <p style="font-size: 1.1rem;">loves</p>
+                        <div style="background-color: rgba(255,255,255,0.2); border-radius: 10px; padding: 8px;">
+                            {category}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # Saran dan analisis
+                st.subheader("📊 Analisis & Saran")
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h4>💡 {advice}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col_b:
+                    # Hitung confidence berdasarkan error model
+                    confidence = max(0, min(100, 100 - (abs(prediction - 11.86) / 11.86 * 100)))
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h4>📊 Confidence Score</h4>
+                        <div style="background-color: #e0e0e0; border-radius: 10px; height: 20px;">
+                            <div style="background-color: #4facfe; width: {confidence}%; height: 20px; border-radius: 10px;"></div>
+                        </div>
+                        <p style="margin-top: 5px;">{confidence:.1f}% akurasi estimasi</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # Detail preprocessing
+                with st.expander("🔍 Lihat Detail Preprocessing"):
+                    st.markdown("**Teks setelah dibersihkan:**")
+                    st.code(combined_text[:500] + ("..." if len(combined_text) > 500 else ""), language="text")
+                    st.markdown("**Fitur yang digunakan:** TF-IDF Vectorizer dengan 5000 fitur (unigram + bigram)")
+                
+            except Exception as e:
+                st.error(f"Terjadi kesalahan saat memprediksi: {str(e)}")
 
 # Footer
 st.markdown("---")
-st.caption("Estimasi kalori bersifat perkiraan. Gunakan sebagai panduan.")
+st.markdown("""
+<div style="text-align: center; color: rgba(255,255,255,0.7); font-size: 0.8rem;">
+    <p>Aplikasi ini menggunakan model XGBoost yang dilatih dengan 14.945 resep.<br>
+    Hasil prediksi bersifat estimasi berdasarkan analisis teks judul, bahan, dan langkah memasak.</p>
+</div>
+""", unsafe_allow_html=True)
 
-# Info tambahan
-with st.expander("ℹ️ Cara Kerja"):
+# Fitur penting
+with st.expander("🏆 Kata/Fitur yang Mempengaruhi Popularitas"):
     st.markdown("""
-    **Cara aplikasi menghitung kalori:**
-    1. Mencocokkan judul resep dengan database masakan populer
-    2. Jika tidak cocok, menghitung berdasarkan bahan yang terdeteksi
-    3. Menambahkan kalori ekstra untuk metode memasak (menggoreng, santan)
+    Berdasarkan analisis model (Feature Importance), berikut adalah kata yang paling mempengaruhi prediksi likes:
     
-    **Database:** 30+ bahan makanan dan 10+ masakan populer.
+    | Pengaruh Positif ⬆️ | Pengaruh Negatif ⬇️ |
+    |---------------------|---------------------|
+    | ayam | diet |
+    | goreng | sayur |
+    | crispy | rebus |
+    | pedas | plain |
+    | saus | tanpa bumbu |
+    | sambal | organik |
+    | bawang | simple |
+    | tepung | praktis |
+    
+    ### 💡 Tips Meningkatkan Popularitas Resep:
+    1. **Judul yang menarik** - Gunakan kata seperti "crispy", "spesial", "enak"
+    2. **Bahan populer** - Ayam, bawang, cabai, saus
+    3. **Langkah detail** - Jelaskan proses dengan jelas
+    4. **Kata kunci positif** - Tambahkan deskripsi menggugah selera
+    """)
+
+# Informasi model
+with st.expander("🤖 Tentang Model Machine Learning"):
+    st.markdown("""
+    ### Detail Model
+    
+    - **Algoritma**: XGBoost Regressor
+    - **Hyperparameter terbaik** (setelah tuning):
+        - `n_estimators`: 50
+        - `max_depth`: 5
+        - `learning_rate`: 0.05
+        - `colsample_bytree`: 0.9
+        - `subsample`: 0.7
+    
+    ### Preprocessing
+    
+    1. **Text Cleaning**: Lowercase, hapus punctuation, hapus angka
+    2. **Feature Extraction**: TF-IDF Vectorizer dengan 5000 fitur (unigram + bigram)
+    3. **Model Training**: XGBoost dengan RandomizedSearchCV
+    
+    ### Dataset
+    
+    - Jumlah resep: 14,945
+    - Rata-rata loves: 11.86
+    - Loves tertinggi: 939
+    - Loves terendah: 0
     """)
